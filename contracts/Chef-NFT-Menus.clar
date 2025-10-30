@@ -11,6 +11,9 @@
 (define-constant err-chef-not-found (err u105))
 (define-constant err-invalid-price (err u106))
 (define-constant err-mint-failed (err u107))
+(define-constant err-invalid-rating (err u108))
+(define-constant err-not-redeemed (err u109))
+(define-constant err-already-reviewed (err u110))
 
 (define-data-var last-token-id uint u0)
 (define-data-var contract-uri (optional (string-utf8 256)) none)
@@ -19,7 +22,9 @@
   name: (string-utf8 64),
   restaurant: (string-utf8 64),
   verified: bool,
-  total-menus: uint
+  total-menus: uint,
+  total-ratings: uint,
+  rating-sum: uint
 })
 
 (define-map menu-details uint {
@@ -41,6 +46,13 @@
 })
 
 (define-map chef-earnings principal uint)
+
+(define-map token-reviews uint {
+  rating: uint,
+  review-text: (string-utf8 256),
+  reviewer: principal,
+  reviewed-at: uint
+})
 
 (define-read-only (get-last-token-id)
   (ok (var-get last-token-id))
@@ -83,7 +95,9 @@
       name: name,
       restaurant: restaurant,
       verified: false,
-      total-menus: u0
+      total-menus: u0,
+      total-ratings: u0,
+      rating-sum: u0
     }))
   )
 )
@@ -317,5 +331,48 @@
       (ok false)
     )
     (ok false)
+  )
+)
+
+(define-read-only (get-token-review (token-id uint))
+  (map-get? token-reviews token-id)
+)
+
+(define-read-only (get-chef-rating (chef principal))
+  (match (map-get? chefs chef)
+    chef-data
+    (if (> (get total-ratings chef-data) u0)
+      (ok (/ (* (get rating-sum chef-data) u100) (get total-ratings chef-data)))
+      (ok u0)
+    )
+    err-chef-not-found
+  )
+)
+
+(define-public (submit-review (token-id uint) (rating uint) (review-text (string-utf8 256)))
+  (let (
+    (menu-info (unwrap! (map-get? menu-details token-id) err-menu-not-found))
+    (redemption-info (unwrap! (map-get? token-redemptions token-id) err-menu-not-found))
+    (chef (get chef menu-info))
+    (chef-data (unwrap! (map-get? chefs chef) err-chef-not-found))
+  )
+    (asserts! (and (>= rating u1) (<= rating u5)) err-invalid-rating)
+    (asserts! (get redeemed redemption-info) err-not-redeemed)
+    (asserts! (is-eq tx-sender (unwrap! (get redeemer redemption-info) err-not-token-owner)) err-not-token-owner)
+    (asserts! (is-none (map-get? token-reviews token-id)) err-already-reviewed)
+    
+    (map-set token-reviews token-id {
+      rating: rating,
+      review-text: review-text,
+      reviewer: tx-sender,
+      reviewed-at: stacks-block-height
+    })
+    
+    (map-set chefs chef (merge chef-data {
+      total-ratings: (+ (get total-ratings chef-data) u1),
+      rating-sum: (+ (get rating-sum chef-data) rating)
+    }))
+    
+    (ok true)
   )
 )
